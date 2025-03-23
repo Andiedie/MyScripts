@@ -498,13 +498,17 @@
                     tmdbLink = href;
                 }
             });
+            appendLog('11111');
+            let crossSeedForbidden = !!$tr.find('.tags.tjz').length;
+            appendLog('22222');
             torrents.push({
                 name: name,
                 detailLink: detailLink,
                 size: size,
                 seeders: seeders,
                 time: time,
-                tmdb: tmdbLink
+                tmdb: tmdbLink,
+                crossSeedForbidden: crossSeedForbidden,
             });
         });
         return torrents;
@@ -520,7 +524,7 @@
             if (m) result.tmdbId = m[1];
         } else if (tmdbLink.indexOf("/tv/") !== -1) {
             result.mediaType = "tv";
-            let m = tmdbLink.match(/\/tv\/(\d+)(?:-|$)/);
+            let m = tmdbLink.match(/\/tv\/(\d+)(?:-|\/|$)/);
             if (m) result.tmdbId = m[1];
         }
         return result;
@@ -711,9 +715,14 @@
                     appendLog(`第 ${currentPage} 页未返回种子，终止处理。`);
                     break;
                 }
+                appendLog(`共解析出 ${torrents.length} 个种子`)
                 for (let torrent of torrents) {
                     if (!running || results.length >= config.targetCount) break;
                     const name = torrent.name || "";
+                    if (torrent.crossSeedForbidden) {
+                        appendLog(`种子 "${name}" 禁转`);
+                        continue
+                    }
                     let skip = false;
                     for (let word of combinedKeywords) {
                         if (word && name.toLowerCase().includes(word)) {
