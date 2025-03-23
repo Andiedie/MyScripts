@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SSD转种查询工具
 // @namespace    http://tampermonkey.net/
-// @version      0.7.1
+// @version      0.7.2
 // @author       andie
 // @updateURL    https://github.com/Andiedie/MyScripts/raw/refs/heads/main/ssd_cross_seed_query.user.js
 // @downloadURL  https://github.com/Andiedie/MyScripts/raw/refs/heads/main/ssd_cross_seed_query.user.js
@@ -478,7 +478,7 @@
         temp.find('.torrents tr').slice(1).each(function() {
             let $tr = $(this);
             // 尝试从内部的 <a> 提取标题与详情链接
-            let aTag = $tr.find('td.rowfollow a[href*="details.php"]').first();
+            let aTag = $tr.find('a[href*="details.php"]').first();
             if (!aTag.length) return;
             let name = aTag.text().trim();
             let detailLink = aTag.attr('href');
@@ -486,10 +486,10 @@
                 detailLink = "https://www.hddolby.com/" + detailLink;
             }
             // 提取其他信息：种子大小、做种人数、发布时间（各自在不同 td 中）
-            let tds = $tr.find('td.rowfollow');
-            let size = tds.eq(3).text().trim();
-            let seeders = tds.eq(4).text().trim();
-            let time = tds.eq(2).find('span').attr('title') || tds.eq(2).text().trim();
+            let tds = $tr.children('td');
+            let size = tds.eq(4).text().trim();
+            let seeders = tds.eq(5).text().trim();
+            let time = tds.eq(3).find('span').attr('title') || tds.eq(2).text().trim();
             // 仅处理带有 TMDB 链接的情况（杜比种子不包含豆瓣或IMDB链接）
             let tmdbLink = null;
             $tr.find('a').each(function() {
