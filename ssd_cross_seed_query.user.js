@@ -336,7 +336,7 @@
                 "pageNumber": 1,
                 "pageSize": 100
             },
-            ssdTemplate: "cat502=1&medium7=1&standard1=1&internal=&selfrelease=&animation=&exclusive=&pack=1&untouched=&selfpurchase=&mandarin=&subtitlezh=1&subtitlesp=&selfcompile=&dovi=&hdr10=&hdr10plus=&hdrvivid=&hlg=&cc=&3d=&request=&contest=&incldead=0&spstate=0&pick=0&inclbookmarked=0&my=&search={douban}&search_area=5&search_mode=0",
+            ssdTemplate: "cat502=1&cat503=1&cat505=1&medium7=1&standard1=1&internal=&selfrelease=&animation=&exclusive=&pack=1&untouched=&selfpurchase=&mandarin=&subtitlezh=1&subtitlesp=&selfcompile=&dovi=&hdr10=&hdr10plus=&hdrvivid=&hlg=&cc=&3d=&request=&contest=&incldead=0&spstate=0&pick=0&inclbookmarked=0&my=&search=%7Bdouban%7D&search_area=5&search_mode=0",
             extraExclusionKeywords: [],
             extraExclusionSuffixes: ["-HDH", "-HDS"],
             additionalFilters: ["countries", "multiSeason"]
