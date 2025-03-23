@@ -3,6 +3,9 @@
 // @namespace    http://tampermonkey.net/
 // @version      0.7.1
 // @author       andie
+// @updateURL    https://github.com/Andiedie/MyScripts/raw/refs/heads/main/ssd_cross_seed_query.user.js
+// @downloadURL  https://github.com/Andiedie/MyScripts/raw/refs/heads/main/ssd_cross_seed_query.user.js
+// @homepageURL  https://github.com/Andiedie/MyScripts
 // @match        https://springsunday.net/userdetails.php*
 // @grant        GM_getValue
 // @grant        GM_setValue
