@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SSD转种查询工具
 // @namespace    http://tampermonkey.net/
-// @version      0.7.3
+// @version      0.7.4
 // @author       andie
 // @updateURL    https://github.com/Andiedie/MyScripts/raw/refs/heads/main/ssd_cross_seed_query.user.js
 // @downloadURL  https://github.com/Andiedie/MyScripts/raw/refs/heads/main/ssd_cross_seed_query.user.js
