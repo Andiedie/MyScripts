@@ -1,9 +1,11 @@
 // ==UserScript==
 // @name         蛙蛙命名助手
 // @namespace    http://tampermonkey.net/
-// @version      1.6.0
+// @version      1.8.1
 // @description  根据原标题和MediaInfo，构建符合蛙蛙要求的种子主标题
 // @author       andie
+// @match        https://www.qingwapt.org/upload.php*
+// @match        https://new.qingwa.pro/upload.php*
 // @match        https://www.qingwapt.org/upload.php*
 // @grant        none
 // @downloadURL https://github.com/Andiedie/MyScripts/raw/refs/heads/main/wa_name_helper.user.js
@@ -13,724 +15,615 @@
 (function() {
     'use strict';
 
-    // 常量定义
-    const AUDIO_FORMATS = [
-        { name: 'DTS-HD MA', regex: /\bDTS-HD MA\b/i },
-        { name: 'DTS-HD', regex: /\bDTS-HD\b/i },
-        { name: 'DTS-X', regex: /\bDTS-X\b/i },
-        { name: 'TrueHD Atmos', regex: /\bTrueHD Atmos\b/i },
-        { name: 'Atmos', regex: /\bAtmos\b/i },
-        { name: 'TrueHD', regex: /\bTrueHD\b/i },
-        { name: 'DTS', regex: /\bDTS\b/i },
-        { name: 'DDP', regex: /\bDDP\d*\.?\d*\b/i },
-        { name: 'DD+', regex: /\bDD\+\b/i },
-        { name: 'AAC', regex: /\bAAC\b/i },
-        { name: 'DD', regex: /\bDD\b/i },
-        { name: 'AC3', regex: /\bAC3\b/i },
-        { name: 'FLAC', regex: /\bFLAC\b/i },
-        { name: 'LPCM', regex: /\bLPCM\b/i },
-        { name: 'EAC3', regex: /\bEAC3\b/i }
+    // 常量定义 - 使用对象简化映射
+    const FORMAT_MAPPINGS = {
+        // 视频格式映射
+        video: {
+            patterns: [
+                { regex: /hevc|h\.265/i, getValue: (lib) => lib.includes('x265') ? 'x265' : 'H.265' },
+                { regex: /avc|h\.264/i, getValue: (lib, bitDepth) => {
+                    const encoding = lib.includes('x264') ? 'x264' : 'H.264';
+                    return bitDepth === 10 ? `Hi10P ${encoding}` : encoding;
+                }}
+            ]
+        },
+        // 音频格式映射
+        audio: {
+            'E-AC-3': 'DDP', 'EAC3': 'DDP', 'Enhanced AC-3': 'DDP',
+            'AC-3': 'DD', 'AC3': 'DD',
+            'AAC': 'AAC', 'FLAC': 'FLAC', 'LPCM': 'LPCM', 'PCM': 'LPCM',
+            'TrueHD': 'TrueHD', 'DTS-HD MA': 'DTS-HD MA', 'DTS-HD': 'DTS-HD',
+            'DTS:X': 'DTS-X', 'DTS-X': 'DTS-X', 'DTS': 'DTS'
+        },
+        // HDR格式检测规则
+        hdr: [
+            { name: 'DoVi HDR10+', test: (info) => /dolby\s*vision|dovi/i.test(info) && /hdr10\+/i.test(info) },
+            { name: 'DoVi HDR', test: (info) => /dolby\s*vision|dovi/i.test(info) && /hdr(?!\+)/i.test(info) },
+            { name: 'DoVi', test: (info) => /dolby\s*vision|dovi/i.test(info) },
+            { name: 'HDR10+', test: (info) => /hdr10\+/i.test(info) },
+            { name: 'HDR', test: (info) => /hdr|smpte\s*st\s*2086|mastering display|MaxCLL|MaxFALL/i.test(info) && !/no-hdr/i.test(info) }
+        ]
+    };
+
+    // 分辨率映射定义
+    const RESOLUTION_MAPPINGS = [
+        { dimensions: [1280, 720], value: '720' },
+        { dimensions: [1920, 1080], value: '1080' },
+        { dimensions: [3840, 2160], value: '2160' }
     ];
 
-    // 从地区码中移除CC
     const REGION_CODES = ['JPN', 'CHN', 'USA', 'KOR', 'FRA', 'GER', 'DEU', 'ITA', 'ESP', 'GBR', 'CAN', 'AUS', 'TWN', 'TW', 'HKG', 'NOR'];
-
-    // 新增其他信息数组，扩展了额外标识
     const EXTRA_INFO = ['CC', 'Unrated', 'Extended', 'Uncut', 'Complete Edition', 'Remaster'];
-
     const VIDEO_SOURCES = ['BluRay', 'WEB-DL', 'WebRip', 'HDTV', 'DVDRip', 'BDRip', 'TVRip'];
-    const VIDEO_ENCODINGS = ['x264', 'x265', 'HEVC', 'AVC', 'H264', 'H265'];
-    const RESOLUTIONS = ['2160p', '1080p', '720p', '480p'];
-
-    // 修改HDR格式常量，确保不会误判
-    const HDR_FORMATS = [
-        { name: 'DoVi HDR10+', regex: /\b(?<!no-|no )dolby\s*vision.*hdr10\+|dovi.*hdr10\+/i },
-        { name: 'DoVi HDR', regex: /\b(?<!no-|no )dolby\s*vision.*hdr(?!\+)|dovi.*hdr(?!\+)/i },
-        { name: 'DoVi', regex: /\b(?<!no-|no )dolby\s*vision|dovi/i },
-        { name: 'HDR10+', regex: /\b(?<!no-|no )hdr10\+/i },
-        { name: 'HDR', regex: /\b(?<!no-|no )(hdr\b(?!\+)|hdr10(?!\+)|smpte\s*st\s*2086)/i }
-    ];
-
-    // 已知制作组列表（优先匹配）
     const KNOWN_GROUP = ['MNHD-FRDS'];
 
-    // 全局变量来跟踪按钮和提示
+    // 全局变量
     let formatBtn = null;
     let toolCell = null;
     let errorMessage = null;
+
+    // 日志工具
+    const Logger = {
+        prefix: '命名助手',
+        log: (msg, data = '') => console.log(`${Logger.prefix}: ${msg}`, data),
+        error: (msg, error = '') => console.error(`${Logger.prefix}: ${msg}`, error),
+        group: (title, fn) => {
+            console.group(`${Logger.prefix}: ${title}`);
+            const result = fn();
+            console.groupEnd();
+            return result;
+        }
+    };
+
+    // MediaInfo 统一解析类
+    class MediaInfoParser {
+        constructor() {
+            this.mediaInfo = this.getMediaInfoText();
+            this.sections = this.parseToSections();
+            Logger.log('MediaInfo解析器初始化', {
+                hasContent: !!this.mediaInfo,
+                length: this.mediaInfo.length
+            });
+        }
+
+        getMediaInfoText() {
+            const textarea = document.querySelector('textarea[name="technical_info"]');
+            return textarea?.value?.trim() || '';
+        }
+
+        parseToSections() {
+            if (!this.mediaInfo) return { video: null, audio: null };
+
+            // 统一的部分查找逻辑
+            const findSection = (type) => {
+                const patterns = {
+                    video: /Video.*?(?=\n\n|Audio|$)/s,
+                    audio: /Audio.*?(?=\n\n|Video|$)/s
+                };
+
+                const match = this.mediaInfo.match(patterns[type]);
+                const found = match ? match[0] : null;
+                Logger.log(`找到${type}部分`, !!found);
+                return found;
+            };
+
+            return Logger.group('解析MediaInfo部分', () => ({
+                video: findSection('video'),
+                audio: findSection('audio')
+            }));
+        }
+
+        // 通用信息提取方法
+        extractInfo(section, field) {
+            if (!section) return null;
+            const match = section.match(new RegExp(`${field}\\s*:\\s*([^\\r\\n]+)`, 'i'));
+            return match ? match[1].trim() : null;
+        }
+
+        // 从 MediaInfo 提取分辨率
+        getResolution() {
+            return Logger.group('从MediaInfo提取分辨率', () => {
+                const videoSection = this.sections.video;
+                if (!videoSection) {
+                    Logger.log('无视频部分');
+                    return null;
+                }
+
+                // 提取宽度和高度
+                const widthStr = this.extractInfo(videoSection, 'Width');
+                const heightStr = this.extractInfo(videoSection, 'Height');
+
+                if (!widthStr || !heightStr) {
+                    Logger.log('未找到宽度或高度信息');
+                    return null;
+                }
+
+                // 解析数值（去除单位和格式化）
+                const width = parseInt(widthStr.replace(/[^\d]/g, ''), 10);
+                const height = parseInt(heightStr.replace(/[^\d]/g, ''), 10);
+
+                Logger.log('视频尺寸', { width, height });
+
+                // 匹配分辨率
+                for (const mapping of RESOLUTION_MAPPINGS) {
+                    const [targetWidth, targetHeight] = mapping.dimensions;
+                    if (width === targetWidth || height === targetHeight) {
+                        Logger.log(`分辨率匹配`, `${width}x${height} -> ${mapping.value}`);
+
+                        // 获取扫描类型
+                        const scanType = this.getScanType();
+                        const suffix = scanType === 'Interlaced' ? 'i' : 'p';
+                        const result = `${mapping.value}${suffix}`;
+
+                        Logger.log('最终分辨率', result);
+                        return result;
+                    }
+                }
+
+                Logger.log('未匹配到标准分辨率', `${width}x${height}`);
+                return null;
+            });
+        }
+
+        // 获取扫描类型
+        getScanType() {
+            const videoSection = this.sections.video;
+            if (!videoSection) return 'Progressive';
+
+            const scanType = this.extractInfo(videoSection, 'Scan type');
+            const result = scanType || 'Progressive';
+            Logger.log('扫描类型', result);
+            return result;
+        }
+
+        // 视频编码提取
+        getVideoEncoding() {
+            return Logger.group('提取视频编码', () => {
+                const videoSection = this.sections.video;
+                if (!videoSection) {
+                    Logger.log('无视频部分');
+                    return null;
+                }
+
+                const format = this.extractInfo(videoSection, 'Format');
+                const writingLibrary = this.extractInfo(videoSection, 'Writing library')?.toLowerCase() || '';
+                const bitDepthMatch = videoSection.match(/Bit depth\s*:\s*(\d+)\s*bits/i);
+                const bitDepth = bitDepthMatch ? parseInt(bitDepthMatch[1], 10) : 8;
+
+                Logger.log('视频信息', { format, writingLibrary, bitDepth });
+
+                // 使用映射表简化格式判断
+                for (const pattern of FORMAT_MAPPINGS.video.patterns) {
+                    if (pattern.regex.test(format)) {
+                        const result = pattern.getValue(writingLibrary, bitDepth);
+                        Logger.log('视频编码结果', result);
+                        return result;
+                    }
+                }
+
+                Logger.log('未识别的视频格式', format);
+                return null;
+            });
+        }
+
+        // 音频格式提取
+        getAudioFormat() {
+            return Logger.group('提取音频格式', () => {
+                const audioSection = this.sections.audio;
+                if (!audioSection) {
+                    Logger.log('无音频部分');
+                    return null;
+                }
+
+                const format = this.extractInfo(audioSection, 'Format');
+                if (!format) {
+                    Logger.log('未找到音频格式信息');
+                    return null;
+                }
+
+                Logger.log('音频格式原始值', format);
+
+                // 特殊处理 TrueHD Atmos
+                if (format.includes('TrueHD') && format.includes('Atmos')) {
+                    Logger.log('音频格式结果', 'TrueHD Atmos');
+                    return 'TrueHD Atmos';
+                }
+
+                // 使用映射表查找格式
+                for (const [key, value] of Object.entries(FORMAT_MAPPINGS.audio)) {
+                    if (format.includes(key)) {
+                        Logger.log('音频格式结果', `${key} -> ${value}`);
+                        return value;
+                    }
+                }
+
+                Logger.log('未识别的音频格式', format);
+                return null;
+            });
+        }
+
+        // 音频声道数提取
+        getAudioChannels() {
+            return Logger.group('提取音频声道', () => {
+                const audioSection = this.sections.audio;
+                if (!audioSection) {
+                    Logger.log('无音频部分');
+                    return null;
+                }
+
+                // 优先从 Channel layout 获取
+                const layoutMatch = audioSection.match(/Channel layout\s*:\s*(.*)/i);
+                if (layoutMatch) {
+                    const layout = layoutMatch[1].trim();
+                    const channels = layout.split(/\s+/);
+                    const mainChannels = channels.filter(ch => ch !== 'LFE').length;
+                    const hasLFE = channels.includes('LFE');
+                    const result = `${mainChannels}.${hasLFE ? '1' : '0'}`;
+                    Logger.log('声道布局解析', { layout, channels, result });
+                    return result;
+                }
+
+                // 从 Channel(s) 获取
+                const channelsMatch = audioSection.match(/Channel\(s\)\s*:\s*(\d+)\s*channels/i);
+                if (channelsMatch) {
+                    const num = parseInt(channelsMatch[1], 10);
+                    const hasLFE = audioSection.includes('LFE');
+
+                    // 常见格式快速映射
+                    const channelMap = { 6: '5.1', 8: '7.1', 2: '2.0' };
+                    const result = (hasLFE && channelMap[num]) ? channelMap[num] : `${num}.0`;
+                    Logger.log('声道数解析', { num, hasLFE, result });
+                    return result;
+                }
+
+                Logger.log('未找到声道信息');
+                return null;
+            });
+        }
+
+        // HDR格式提取
+        getHDRFormat() {
+            return Logger.group('提取HDR格式', () => {
+                const videoSection = this.sections.video;
+                if (!videoSection) {
+                    Logger.log('无视频部分');
+                    return null;
+                }
+
+                // 检查SDR特征
+                if (this.isSDRContent(videoSection)) {
+                    Logger.log('检测到SDR内容');
+                    return null;
+                }
+
+                // 按优先级检查HDR格式
+                for (const hdr of FORMAT_MAPPINGS.hdr) {
+                    if (hdr.test(videoSection)) {
+                        Logger.log('HDR格式结果', hdr.name);
+                        return hdr.name;
+                    }
+                }
+
+                Logger.log('未检测到HDR格式');
+                return null;
+            });
+        }
+
+        isSDRContent(videoSection) {
+            const isSDR = (
+                /color primaries\s*:\s*bt\.709/i.test(videoSection) &&
+                /transfer characteristics\s*:\s*bt\.709/i.test(videoSection) &&
+                !/\b(?:HDR|Dolby Vision|DoVi|HLG)\b/i.test(videoSection)
+            ) || (/\bno-hdr10\b/i.test(videoSection) && !/\bdolby\s*vision\b|\bdovi\b/i.test(videoSection));
+
+            if (isSDR) Logger.log('SDR特征检测', 'BT.709色彩空间或no-hdr标记');
+            return isSDR;
+        }
+
+        // 音轨数量统计
+        getAudioTrackCount() {
+            if (!this.mediaInfo) return 0;
+
+            const audioMatches = this.mediaInfo.match(/Audio #\d+/g);
+            const count = audioMatches ? audioMatches.length : 0;
+            Logger.log('音轨数量', count);
+            return count;
+        }
+
+        // 检查解析是否成功
+        isValid() {
+            const audioFormat = this.getAudioFormat();
+            const audioChannels = this.getAudioChannels();
+            const isValid = !!(audioFormat && audioChannels);
+            Logger.log('MediaInfo有效性检查', { audioFormat, audioChannels, isValid });
+            return isValid;
+        }
+    }
+
+    // 标题组件提取器
+    class TitleExtractor {
+        constructor(originalTitle) {
+            this.title = originalTitle;
+            Logger.log('标题提取器初始化', originalTitle);
+        }
+
+        extract(pattern, defaultValue = null) {
+            const match = this.title.match(pattern);
+            return match ? match[0] : defaultValue;
+        }
+
+        extractFromList(list, ignoreCase = true) {
+            const flags = ignoreCase ? 'i' : '';
+            for (const item of list) {
+                const regex = new RegExp('\\b' + item + '\\b', flags);
+                if (regex.test(this.title)) return item;
+            }
+            return null;
+        }
+
+        getComponents() {
+            return Logger.group('提取标题组件', () => {
+                const components = {
+                    title: this.getTitle(),
+                    seasonEpisode: this.getSeasonEpisode(),
+                    year: this.extract(/\b(19\d{2}|20\d{2})\b/),
+                    regionCode: this.extractFromList(REGION_CODES),
+                    extraInfo: this.getExtraInfo(),
+                    sourceType: this.extractFromList(VIDEO_SOURCES),
+                    releaseGroup: this.getReleaseGroup()
+                };
+
+                Logger.log('标题组件提取结果', components);
+                return components;
+            });
+        }
+
+        getTitle() {
+            // 先找到年份的位置
+            const yearMatch = this.title.match(/\b(19\d{2}|20\d{2})\b/);
+
+            // 如果有年份，标题是年份之前的部分
+            if (yearMatch) {
+                const yearIndex = this.title.indexOf(yearMatch[0]);
+                const titlePart = this.title.substring(0, yearIndex).trim();
+                Logger.log('剧名提取(基于年份)', titlePart);
+                return titlePart;
+            }
+
+            // 如果没有年份，但有季数集数信息，标题是季数集数之前的部分
+            const seasonMatch = this.title.match(/\bS\d+(?:E\d+)?(?:-S\d+)?/i);
+            if (seasonMatch) {
+                const seasonIndex = this.title.indexOf(seasonMatch[0]);
+                const titlePart = this.title.substring(0, seasonIndex).trim();
+                Logger.log('剧名提取(基于季数)', titlePart);
+                return titlePart;
+            }
+
+            // 否则返回整个标题
+            const result = this.title.trim();
+            Logger.log('剧名提取(完整标题)', result);
+            return result;
+        }
+
+        getSeasonEpisode() {
+            return Logger.group('提取季数集数信息', () => {
+                // 支持的格式：
+                // S01, S01E03, S02E2134, S01-S02
+                const patterns = [
+                    /\bS\d+(?:-S\d+)\b/i,      // S01-S02 (季度范围)
+                    /\bS\d+E\d+\b/i,           // S01E03 (季数+集数)
+                    /\bS\d+\b/i                // S01 (仅季数)
+                ];
+
+                for (const pattern of patterns) {
+                    const match = this.title.match(pattern);
+                    if (match) {
+                        const result = match[0].toUpperCase(); // 统一转为大写
+                        Logger.log('季数集数匹配', { pattern: pattern.source, result });
+                        return result;
+                    }
+                }
+
+                Logger.log('未找到季数集数信息');
+                return null;
+            });
+        }
+
+        getExtraInfo() {
+            const found = [];
+            for (const info of EXTRA_INFO) {
+                if (new RegExp('\\b' + info + '\\b', 'i').test(this.title)) {
+                    found.push(info);
+                }
+            }
+            const result = found.length > 0 ? found : null;
+            if (result) Logger.log('额外信息', result);
+            return result;
+        }
+
+        getReleaseGroup() {
+            // 检查已知制作组
+            for (const group of KNOWN_GROUP) {
+                if (this.title.includes(group)) {
+                    Logger.log('制作组(已知)', group);
+                    return group;
+                }
+            }
+
+            // 通用模式匹配
+            const matches = this.title.match(/-[A-Za-z0-9]+(?=\s|$)/g);
+            const result = matches ? matches[matches.length - 1] : null;
+            if (result) Logger.log('制作组(通用)', result);
+            return result;
+        }
+    }
+
+    // 标题构建器
+    class TitleBuilder {
+        static build(components) {
+            return Logger.group('构建标准化标题', () => {
+                const parts = [
+                    components.title,
+                    components.seasonEpisode,     // 季数集数紧跟在剧名后面
+                    components.year,
+                    ...(components.extraInfo || []),
+                    components.resolution,  // 现在来自 MediaInfo
+                    components.regionCode,
+                    components.sourceType,
+                    components.hdrFormat,
+                    components.videoEncoding,
+                    components.audioFormat && components.audioChannels ?
+                        `${components.audioFormat} ${components.audioChannels}` : null,
+                    components.audioTrackCount > 1 ? `${components.audioTrackCount}Audio` : null
+                ].filter(Boolean);
+
+                let title = parts.join(' ');
+
+                // 添加制作组
+                if (components.releaseGroup) {
+                    title += components.releaseGroup.startsWith('-') ?
+                        components.releaseGroup : ` ${components.releaseGroup}`;
+                }
+
+                Logger.log('标题构建完成', title);
+                Logger.log('使用的组件', parts);
+                return title;
+            });
+        }
+    }
 
     // 初始化界面
     window.addEventListener('load', initUI);
 
     function initUI() {
-        console.log('青蛙转种助手: 脚本已加载');
+        Logger.log('脚本已加载');
 
         const publishBtn = document.querySelector('input[type="submit"][value="发布"]');
         if (!publishBtn) return;
 
-        console.log('青蛙转种助手: 找到发布按钮');
-
-        // 获取表格
         const tableRows = document.querySelector('form > table > tbody').querySelectorAll('tr');
         const firstRow = tableRows[0];
 
-        // 创建工具栏行
+        // 创建工具栏
         const toolRow = document.createElement('tr');
         toolCell = document.createElement('td');
         toolCell.className = 'toolbox';
         toolCell.align = 'center';
         toolCell.colSpan = '2';
 
-        // 创建规范标题按钮
         formatBtn = document.createElement('input');
         formatBtn.type = 'button';
         formatBtn.value = '重建标题';
         formatBtn.style.marginRight = '10px';
         formatBtn.addEventListener('click', standardizeTitle);
 
-        // 移除发布按钮的原始父元素并重新添加
         publishBtn.parentNode.removeChild(publishBtn);
-
-        // 添加元素到工具栏
         toolCell.appendChild(formatBtn);
         toolCell.appendChild(publishBtn);
         toolRow.appendChild(toolCell);
-
-        // 添加工具栏到表格
         firstRow.parentNode.insertBefore(toolRow, firstRow);
 
-        // 移除可能的重复工具栏
+        // 添加MediaInfo监听
+        const mediaInfoTextarea = document.querySelector('textarea[name="technical_info"]');
+        if (mediaInfoTextarea) {
+            mediaInfoTextarea.addEventListener('input', handleMediaInfoChange);
+        }
+
+        // 清理重复工具栏
         const lastRow = tableRows[tableRows.length - 1];
         if (lastRow.querySelector('.toolbox') && lastRow !== toolRow) {
             lastRow.parentNode.removeChild(lastRow);
-            console.log('青蛙转种助手: 删除了重复的工具栏');
         }
 
-        // 添加MediaInfo文本框变化监听
-        const mediaInfoTextarea = document.querySelector('textarea[name="technical_info"]');
-        if (mediaInfoTextarea) {
-            // 使用input事件来监听所有变化，包括粘贴、输入和删除
-            mediaInfoTextarea.addEventListener('input', handleMediaInfoChange);
-            console.log('青蛙转种助手: 已添加MediaInfo文本框变化监听');
-        }
-
-        console.log('青蛙转种助手: 界面初始化完成');
-
-        // 修复：在页面加载完成后强制执行一次MediaInfo检查，确保按钮状态正确
-        setTimeout(() => {
-            console.log('青蛙转种助手: 执行初始MediaInfo状态检查');
-            handleMediaInfoChange();
-        }, 500);
+        setTimeout(handleMediaInfoChange, 500);
     }
 
-    // 创建错误提示元素
-    function createErrorMessage() {
-        if (errorMessage && errorMessage.parentNode) {
-            errorMessage.parentNode.removeChild(errorMessage);
+    function handleMediaInfoChange() {
+        Logger.log('MediaInfo内容变化，开始解析');
+        const parser = new MediaInfoParser();
+
+        removeErrorMessage();
+
+        if (!parser.mediaInfo) {
+            Logger.log('MediaInfo为空');
+            showButton();
+            return;
         }
 
-        errorMessage = document.createElement('span');
-        errorMessage.textContent = 'MediaInfo 解析失败';
-        errorMessage.style.color = 'red';
-        errorMessage.style.fontWeight = 'bold';
-        errorMessage.style.marginRight = '10px';
-        console.log('青蛙转种助手: 创建错误提示');
-        return errorMessage;
+        if (parser.isValid()) {
+            Logger.log('MediaInfo解析成功');
+            showButton();
+        } else {
+            Logger.log('MediaInfo解析失败');
+            showError();
+        }
     }
 
-    // 移除错误提示
+    function showButton() {
+        if (formatBtn) formatBtn.style.display = '';
+    }
+
+    function showError() {
+        if (!errorMessage) {
+            errorMessage = document.createElement('span');
+            errorMessage.textContent = 'MediaInfo 解析失败';
+            errorMessage.style.cssText = 'color: red; font-weight: bold; margin-right: 10px;';
+            if (toolCell) toolCell.insertBefore(errorMessage, formatBtn);
+        }
+        if (formatBtn) formatBtn.style.display = 'none';
+    }
+
     function removeErrorMessage() {
-        if (errorMessage && errorMessage.parentNode) {
+        if (errorMessage?.parentNode) {
             errorMessage.parentNode.removeChild(errorMessage);
             errorMessage = null;
-            console.log('青蛙转种助手: 移除错误提示');
         }
     }
 
-    // 处理MediaInfo文本框变化
-    function handleMediaInfoChange() {
-        console.log('青蛙转种助手: MediaInfo内容已变化，开始解析');
-
-        // 获取当前MediaInfo内容
-        const mediaInfoTextarea = document.querySelector('textarea[name="technical_info"]');
-        if (!mediaInfoTextarea || !mediaInfoTextarea.value.trim()) {
-            console.log('青蛙转种助手: MediaInfo为空');
-
-            // MediaInfo为空时，移除错误提示，显示重建标题按钮
-            removeErrorMessage();
-            if (formatBtn) {
-                formatBtn.style.display = '';
-            }
-            return;
-        }
-
-        // 尝试提取音频格式和声道数
-        const audioFormat = extractAudioFormat();
-        const audioChannels = extractAudioChannels();
-
-        // 检查是否成功解析了MediaInfo
-        if (audioFormat && audioChannels) {
-            console.log('青蛙转种助手: MediaInfo解析成功，音频格式:', audioFormat, '声道数:', audioChannels);
-
-            // 解析成功，移除错误提示，显示重建标题按钮
-            removeErrorMessage();
-            if (formatBtn) {
-                formatBtn.style.display = '';
-                console.log('青蛙转种助手: 显示重建标题按钮');
-            }
-        } else {
-            console.log('青蛙转种助手: MediaInfo解析失败，无法获取音频格式或声道数');
-
-            // 解析失败，显示错误提示，隐藏重建标题按钮
-            if (!errorMessage) {
-                errorMessage = createErrorMessage();
-                if (toolCell) {
-                    toolCell.insertBefore(errorMessage, formatBtn);
-                    console.log('青蛙转种助手: 添加错误提示');
-                }
-            }
-
-            // 隐藏重建标题按钮
-            if (formatBtn) {
-                formatBtn.style.display = 'none';
-                console.log('青蛙转种助手: 隐藏重建标题按钮');
-            }
-        }
-    }
-
-    // ---------------- 新的标题提取和构建函数 ----------------
-
-    // 从原始标题中提取电影/剧集名称（年份之前的部分）
-    function extractTitle(originalTitle) {
-        const yearMatch = originalTitle.match(/\b(19\d{2}|20\d{2})\b/);
-        if (!yearMatch) {
-            return originalTitle.trim();
-        }
-
-        const year = yearMatch[0];
-        const yearIndex = originalTitle.indexOf(year);
-        return originalTitle.substring(0, yearIndex).trim();
-    }
-
-    // 从原始标题中提取年份
-    function extractYear(originalTitle) {
-        const yearMatch = originalTitle.match(/\b(19\d{2}|20\d{2})\b/);
-        return yearMatch ? yearMatch[0] : null;
-    }
-
-    // 从原始标题中提取分辨率
-    function extractResolution(originalTitle) {
-        for (const res of RESOLUTIONS) {
-            const resRegex = new RegExp('\\b' + res + '\\b', 'i');
-            if (resRegex.test(originalTitle)) {
-                return res;
-            }
-        }
-        return null;
-    }
-
-    // 从原始标题中提取地区码
-    function extractRegionCode(originalTitle) {
-        for (const code of REGION_CODES) {
-            const codeRegex = new RegExp('\\b' + code + '\\b', 'i');
-            if (codeRegex.test(originalTitle)) {
-                return code;
-            }
-        }
-        return null;
-    }
-
-    // 新增：从原始标题中提取额外信息（CC, Unrated, Extended等）
-    function extractExtraInfo(originalTitle) {
-        const extraInfoFound = [];
-
-        for (const info of EXTRA_INFO) {
-            const infoRegex = new RegExp('\\b' + info + '\\b', 'i');
-            if (infoRegex.test(originalTitle)) {
-                extraInfoFound.push(info);
-            }
-        }
-
-        return extraInfoFound.length > 0 ? extraInfoFound : null;
-    }
-
-    // 从原始标题中提取片源类型
-    function extractSourceType(originalTitle) {
-        for (const source of VIDEO_SOURCES) {
-            const sourceRegex = new RegExp('\\b' + source + '\\b', 'i');
-            if (sourceRegex.test(originalTitle)) {
-                return source;
-            }
-        }
-        return null;
-    }
-
-    // 从原始标题中提取视频编码
-    function extractVideoEncoding(originalTitle) {
-        for (const encoding of VIDEO_ENCODINGS) {
-            const encodingRegex = new RegExp('\\b' + encoding + '\\b', 'i');
-            if (encodingRegex.test(originalTitle)) {
-                return encoding;
-            }
-        }
-        return null;
-    }
-
-    // 修改：从原始标题中提取制作组，支持更多格式
-    function extractReleaseGroup(originalTitle) {
-        console.log('青蛙转种助手: 开始提取制作组，原始标题:', originalTitle);
-
-        // 首先检查已知制作组
-        for (const group of KNOWN_GROUP) {
-            // 对于MNHD-FRDS这种包含连字符的组名
-            if (group.includes('-') && !group.startsWith('-')) {
-                if (originalTitle.includes(group)) {
-                    console.log('青蛙转种助手: 找到已知制作组:', group);
-                    return group;
-                }
-            }
-            // 对于-CMCT这种以连字符开头的组名
-            else if (group.startsWith('-')) {
-                // 确保找到的是组名而不是标题中的其他连字符
-                const pos = originalTitle.indexOf(group);
-                if (pos !== -1) {
-                    // 检查是否在标题末尾或后面跟着空格/标点
-                    if (pos + group.length === originalTitle.length ||
-                        /[\s.,;!?]/.test(originalTitle[pos + group.length])) {
-                        console.log('青蛙转种助手: 找到已知制作组:', group);
-                        return group;
-                    }
-                }
-            }
-        }
-
-        // 如果没有找到已知制作组，使用通用模式匹配 -XXX 格式
-        // 匹配以连字符开头，后跟字母数字的组名，通常出现在标题末尾
-        const groupMatches = originalTitle.match(/-[A-Za-z0-9]+(?=\s|$)/g);
-        if (groupMatches && groupMatches.length > 0) {
-            // 取最后一个匹配项作为制作组（通常制作组在标题末尾）
-            const lastMatch = groupMatches[groupMatches.length - 1];
-            console.log('青蛙转种助手: 通过通用模式找到制作组:', lastMatch);
-            return lastMatch;
-        }
-
-        console.log('青蛙转种助手: 未找到制作组');
-        return null;
-    }
-
-    // 修复：从MediaInfo中提取HDR格式信息，确保不会误判
-    function extractHDRFormat() {
-        const mediaInfoTextarea = document.querySelector('textarea[name="technical_info"]');
-        if (!mediaInfoTextarea || !mediaInfoTextarea.value.trim()) {
-            console.log('青蛙转种助手: 未找到mediainfo，无法获取HDR格式');
-            return null;
-        }
-
-        const mediainfo = mediaInfoTextarea.value;
-
-        // 查找视频部分
-        const videoSection = mediainfo.match(/Video.*?((?=Audio)|$)/s);
-        if (!videoSection) {
-            console.log('青蛙转种助手: 未找到Video部分，无法获取HDR格式');
-            return null;
-        }
-
-        const videoInfo = videoSection[0];
-        console.log('青蛙转种助手: 找到Video部分，开始分析HDR格式');
-
-        // 首先检查SDR明确指标 - 如果是BT.709且不包含HDR特征，就是SDR
-        if (
-            videoInfo.match(/color primaries\s*:\s*bt\.709/i) &&
-            videoInfo.match(/transfer characteristics\s*:\s*bt\.709/i) &&
-            !videoInfo.match(/\b(?:HDR|Dolby Vision|DoVi|HLG)\b/i)
-        ) {
-            console.log('青蛙转种助手: 检测到BT.709色彩空间和传输特性，确认为SDR内容');
-            return null;
-        }
-
-        // 检查是否包含编码设置中的no-hdr标记
-        if (videoInfo.match(/\bno-hdr10\b/i) && !videoInfo.match(/\bdolby\s*vision\b|\bdovi\b/i)) {
-            console.log('青蛙转种助手: 检测到no-hdr10标记，确认为SDR内容');
-            return null;
-        }
-
-        // 检查明确的HDR指标
-        // 1. 检查颜色特征 - BT.2020色彩空间与PQ/HLG传输特性是HDR的明确标志
-        if (videoInfo.match(/color primaries\s*:\s*bt\.2020/i)) {
-            console.log('青蛙转种助手: 检测到BT.2020色彩空间，可能是HDR内容');
-
-            // 检查传输特性
-            if (videoInfo.match(/transfer characteristics\s*:\s*pq/i) ||
-                videoInfo.match(/transfer characteristics\s*:\s*smpte\s*st\s*2084/i)) {
-                console.log('青蛙转种助手: 检测到PQ传输特性，确认为HDR10内容');
-                return 'HDR';
-            }
-
-            if (videoInfo.match(/transfer characteristics\s*:\s*hlg/i)) {
-                console.log('青蛙转种助手: 检测到HLG传输特性，确认为HLG HDR内容');
-                return 'HLG';
-            }
-        }
-
-        // 2. 检查HDR元数据
-        if (videoInfo.match(/mastering display color primaries/i) ||
-            videoInfo.match(/MaxCLL|MaxFALL/i) ||
-            videoInfo.match(/smpte\s*st\s*2086/i)) {
-            console.log('青蛙转种助手: 检测到HDR元数据，确认为HDR内容');
-            return 'HDR';
-        }
-
-        // 3. 检查是否是杜比视界(Dolby Vision)
-        if (videoInfo.match(/\b(?<!no-|no )dolby\s*vision\b|\b(?<!no-|no )dovi\b/i)) {
-            console.log('青蛙转种助手: 检测到Dolby Vision标记');
-
-            // 检查是否同时支持HDR10+
-            if (videoInfo.match(/\b(?<!no-|no )hdr10\+\b/i)) {
-                console.log('青蛙转种助手: 同时检测到HDR10+，确认为双层HDR');
-                return 'DoVi HDR10+';
-            }
-            // 检查是否同时支持HDR10
-            else if (videoInfo.match(/\b(?<!no-|no )hdr10\b|\b(?<!no-|no )hdr\b(?!\+)/i)) {
-                console.log('青蛙转种助手: 同时检测到HDR10，确认为DoVi HDR');
-                return 'DoVi HDR';
-            }
-            // 只有杜比视界
-            else {
-                return 'DoVi';
-            }
-        }
-
-        // 4. 检查是否是HDR10+
-        if (videoInfo.match(/\b(?<!no-|no )hdr10\+\b/i)) {
-            console.log('青蛙转种助手: 检测到HDR10+标记');
-            return 'HDR10+';
-        }
-
-        // 5. 检查是否是HDR10
-        if (videoInfo.match(/\b(?<!no-|no )hdr10\b|\b(?<!no-|no )hdr\b(?!\+)/i) &&
-            !videoInfo.match(/no-hdr10\b/i)) {
-            console.log('青蛙转种助手: 检测到HDR10标记');
-            return 'HDR';
-        }
-
-        console.log('青蛙转种助手: 未检测到任何HDR相关特征，确认为SDR内容');
-        return null;
-    }
-
-    // 从MediaInfo获取音频格式 - 修复E-AC-3识别为DDP而不是DD
-    function extractAudioFormat() {
-        const mediaInfoTextarea = document.querySelector('textarea[name="technical_info"]');
-        if (!mediaInfoTextarea || !mediaInfoTextarea.value.trim()) {
-            console.log('青蛙转种助手: 未找到mediainfo，无法获取音频格式');
-            return null;
-        }
-
-        const mediainfo = mediaInfoTextarea.value;
-
-        // 查找第一个音频部分（通常是主音轨）
-        let audioSection = findAudioSection(mediainfo);
-        if (!audioSection) {
-            console.log('青蛙转种助手: 未找到Audio部分，无法获取音频格式');
-            return null;
-        }
-
-        // 从Format行提取音频格式
-        const formatMatch = audioSection.match(/Format\s*:\s*([^\r\n]+)/i);
-        if (!formatMatch) {
-            console.log('青蛙转种助手: 未找到音频格式信息');
-            return null;
-        }
-
-        const formatInfo = formatMatch[1].trim();
-        console.log('青蛙转种助手: 从MediaInfo获取到音频格式:', formatInfo);
-
-        // 判断音频格式，将MediaInfo格式映射到标题格式
-        // 修复E-AC-3识别为DDP而不是DD
-        if (formatInfo.includes('E-AC-3') || formatInfo.includes('EAC3') || formatInfo.includes('Enhanced AC-3')) {
-            return 'DDP'; // 修正: 识别为DDP而不是DD
-        } else if (formatInfo.includes('AC-3') || formatInfo.includes('AC3')) {
-            return 'DD';
-        } else if (formatInfo.includes('AAC')) {
-            return 'AAC';
-        } else if (formatInfo.includes('FLAC')) {
-            return 'FLAC';
-        } else if (formatInfo.includes('TrueHD')) {
-            return formatInfo.includes('Atmos') ? 'TrueHD Atmos' : 'TrueHD';
-        } else if (formatInfo.includes('DTS-HD MA')) {
-            return 'DTS-HD MA';
-        } else if (formatInfo.includes('DTS-HD')) {
-            return 'DTS-HD';
-        } else if (formatInfo.includes('DTS:X') || formatInfo.includes('DTS-X')) {
-            return 'DTS-X';
-        } else if (formatInfo.includes('DTS')) {
-            return 'DTS';
-        } else if (formatInfo.includes('LPCM') || formatInfo.includes('PCM')) {
-            return 'LPCM';
-        }
-
-        return null;
-    }
-
-    // 从MediaInfo获取音频声道数
-    function extractAudioChannels() {
-        const mediaInfoTextarea = document.querySelector('textarea[name="technical_info"]');
-        if (!mediaInfoTextarea || !mediaInfoTextarea.value.trim()) {
-            console.log('青蛙转种助手: 未找到mediainfo');
-            return null;
-        }
-
-        const mediainfo = mediaInfoTextarea.value;
-
-        // 尝试查找音频部分
-        let audioSection = findAudioSection(mediainfo);
-        if (!audioSection) {
-            console.log('青蛙转种助手: 未找到Audio部分');
-            return null;
-        }
-
-        // 尝试从Channel layout获取声道数
-        const layoutMatch = audioSection.match(/Channel layout\s*:\s*(.*)/i);
-        if (layoutMatch) {
-            const layout = layoutMatch[1].trim();
-            console.log('青蛙转种助手: 找到Channel layout:', layout);
-
-            const channels = layout.split(/\s+/);
-            let mainChannels = 0;
-            let hasLFE = false;
-
-            for (const channel of channels) {
-                if (channel === 'LFE') hasLFE = true;
-                else mainChannels++;
-            }
-
-            const result = mainChannels + (hasLFE ? '.1' : '.0');
-            console.log('青蛙转种助手: 从Channel layout计算出声道数:', result);
-            return result;
-        }
-
-        // 尝试从Channel(s)获取声道数
-        const channelsMatch = audioSection.match(/Channel\(s\)\s*:\s*(\d+)\s*channels/i);
-        if (channelsMatch) {
-            const channelNum = parseInt(channelsMatch[1], 10);
-            console.log('青蛙转种助手: 从Channel(s)找到声道数:', channelNum);
-
-            const hasLFE = audioSection.includes('LFE');
-
-            if (channelNum === 6 && hasLFE) return '5.1';
-            if (channelNum === 8 && hasLFE) return '7.1';
-            if (channelNum === 2) return '2.0';
-            return channelNum + '.0';
-        }
-
-        return null;
-    }
-
-    // 计算MediaInfo中的音轨数量
-    function extractAudioTrackCount() {
-        const mediaInfoTextarea = document.querySelector('textarea[name="technical_info"]');
-        if (!mediaInfoTextarea || !mediaInfoTextarea.value.trim()) {
-            console.log('青蛙转种助手: 未找到mediainfo');
-            return 0;
-        }
-
-        const mediainfo = mediaInfoTextarea.value;
-
-        // 方法1: 查找 "Audio #" 数量
-        const audioMatches = mediainfo.match(/Audio #\d+/g);
-        if (audioMatches && audioMatches.length > 0) {
-            console.log('青蛙转种助手: 找到音轨数量:', audioMatches.length);
-            return audioMatches.length;
-        }
-
-        // 方法2: 通过格式查找音频部分
-        const formatMatches = mediainfo.match(/Format\s*:\s*(AC-3|DTS|AAC|FLAC|MP3|PCM|TrueHD|MLP|E-AC-3)/gi);
-        if (formatMatches && formatMatches.length > 0) {
-            // 过滤非音频格式的条目
-            const audioFormats = formatMatches.filter(match => {
-                const contextStart = Math.max(0, mediainfo.indexOf(match) - 150);
-                const contextEnd = Math.min(mediainfo.length, mediainfo.indexOf(match) + 150);
-                const context = mediainfo.substring(contextStart, contextEnd);
-                return context.includes('Audio') ||
-                       context.includes('Channel') ||
-                       context.includes('Sampling') ||
-                       context.includes('channels');
-            });
-
-            if (audioFormats.length > 0) {
-                console.log('青蛙转种助手: 通过格式匹配找到音轨数量:', audioFormats.length);
-                return audioFormats.length;
-            }
-        }
-
-        // 方法3: 尝试识别单独的音频部分
-        const audioSections = mediainfo.split('\n\n').filter(section =>
-            section.trim().startsWith('Audio') ||
-            (section.includes('Channel layout') && !section.includes('Video')) ||
-            (section.includes('Channel(s)') && !section.includes('Video')));
-
-        if (audioSections && audioSections.length > 0) {
-            console.log('青蛙转种助手: 通过分段找到音轨数量:', audioSections.length);
-            return audioSections.length;
-        }
-
-        console.log('青蛙转种助手: 无法确定音轨数量');
-        return 0;
-    }
-
-    // 查找音频部分
-    function findAudioSection(mediainfo) {
-        // 方法1: 分割并查找
-        const sections = mediainfo.split(/\n\n+/);
-        for (const section of sections) {
-            if (section.trim().startsWith('Audio') ||
-                (section.trim().match(/^ID\s+:\s+\d+\s*\nFormat\s+:\s+/m) &&
-                section.includes('Channel'))) {
-                console.log('青蛙转种助手: 找到Audio部分');
-                return section;
-            }
-        }
-
-        // 方法2: 正则表达式查找
-        const audioMatch = mediainfo.match(/Audio(?:\r?\n|.)*?(?=\n\n|\n[A-Za-z][^:]*:|\n[A-Za-z][^:]*$|$)/);
-        if (audioMatch) {
-            console.log('青蛙转种助手: 第二种方法找到Audio部分');
-            return audioMatch[0];
-        }
-
-        // 备选方案: 任何包含Channel信息的部分
-        const channelMatch = mediainfo.match(/Channel\(s\)\s*:\s*(\d+)\s*channels/i);
-        if (channelMatch) {
-            const context = mediainfo.substring(
-                Math.max(0, mediainfo.indexOf(channelMatch[0]) - 200),
-                Math.min(mediainfo.length, mediainfo.indexOf(channelMatch[0]) + 200)
-            );
-            return context;
-        }
-
-        return null;
-    }
-
-    // 修改：构建标准化标题，制作组为可选
-    function buildStandardizedTitle(components) {
-        let title = '';
-
-        // 电影/剧集名称和年份（必需）
-        if (!components.title || !components.year) {
-            throw new Error("标题必须包含剧名和年份");
-        }
-
-        title += components.title + ' ' + components.year;
-
-        // 添加额外信息（CC, Unrated, Extended等）- 放在年份之后，分辨率之前
-        if (components.extraInfo && components.extraInfo.length > 0) {
-            for (const info of components.extraInfo) {
-                title += ' ' + info;
-            }
-        }
-
-        // 添加分辨率（如果有）
-        if (components.resolution) {
-            title += ' ' + components.resolution;
-        }
-
-        // 添加地区码（如果有）
-        if (components.regionCode) {
-            title += ' ' + components.regionCode;
-        }
-
-        // 添加片源类型（如果有）
-        if (components.sourceType) {
-            title += ' ' + components.sourceType;
-        }
-
-        // 添加HDR格式信息（如果有）- 放在片源类型之后，视频编码之前
-        if (components.hdrFormat) {
-            title += ' ' + components.hdrFormat;
-        }
-
-        // 添加视频编码（如果有）
-        if (components.videoEncoding) {
-            title += ' ' + components.videoEncoding;
-        }
-
-        // 添加音频编码和声道信息（如果有）
-        if (components.audioFormat && components.audioChannels) {
-            title += ' ' + components.audioFormat + ' ' + components.audioChannels;
-        }
-
-        // 添加音轨数（如果多于1个音轨）
-        if (components.audioTrackCount > 1) {
-            title += ' ' + components.audioTrackCount + 'Audio';
-        }
-
-        // 添加制作组（如果有）
-        if (components.releaseGroup) {
-            // 如果制作组以连字符开头，不需要额外空格
-            if (components.releaseGroup.startsWith('-')) {
-                title += components.releaseGroup;
-            } else {
-                title += ' ' + components.releaseGroup;
-            }
-        }
-
-        return title;
-    }
-
-    // 修改：标题规范化处理，制作组为可选
     function standardizeTitle() {
-        console.log('青蛙转种助手: 开始重建标题');
-
-        const titleInput = document.getElementById('name');
-        if (!titleInput || !titleInput.value.trim()) {
-            alert('未找到标题输入框或标题为空');
-            return;
-        }
-
-        const originalTitle = titleInput.value;
-        console.log('青蛙转种助手: 原始标题:', originalTitle);
-
-        try {
-            // 从原始标题提取各个组件
-            const titleComponents = {
-                title: extractTitle(originalTitle),
-                year: extractYear(originalTitle),
-                resolution: extractResolution(originalTitle),
-                regionCode: extractRegionCode(originalTitle),
-                extraInfo: extractExtraInfo(originalTitle), // 提取额外信息
-                sourceType: extractSourceType(originalTitle),
-                videoEncoding: extractVideoEncoding(originalTitle),
-                releaseGroup: extractReleaseGroup(originalTitle), // 可能为null
-                hdrFormat: extractHDRFormat(), // 新增: 提取HDR格式
-                audioFormat: extractAudioFormat(),
-                audioChannels: extractAudioChannels(),
-                audioTrackCount: extractAudioTrackCount()
-            };
-
-            // 检查必需组件
-            if (!titleComponents.title || !titleComponents.year) {
-                throw new Error("标题必须包含剧名和年份");
+        Logger.group('开始重建标题', () => {
+            const titleInput = document.getElementById('name');
+            if (!titleInput?.value.trim()) {
+                alert('未找到标题输入框或标题为空');
+                return;
             }
 
-            // 检查MediaInfo是否存在
-            if (!titleComponents.audioFormat || !titleComponents.audioChannels) {
-                throw new Error("请先添加MediaInfo或确保MediaInfo包含音频信息");
+            Logger.log('原始标题', titleInput.value);
+
+            try {
+                const parser = new MediaInfoParser();
+                const extractor = new TitleExtractor(titleInput.value);
+
+                // 合并所有组件
+                const components = {
+                    ...extractor.getComponents(),
+                    resolution: parser.getResolution(),  // 从 MediaInfo 获取分辨率
+                    videoEncoding: parser.getVideoEncoding(),
+                    hdrFormat: parser.getHDRFormat(),
+                    audioFormat: parser.getAudioFormat(),
+                    audioChannels: parser.getAudioChannels(),
+                    audioTrackCount: parser.getAudioTrackCount()
+                };
+
+                Logger.log('最终组件汇总', components);
+
+                // 验证必需组件
+                if (!components.title) {
+                    throw new Error("标题必须包含剧名");
+                }
+
+                if (!components.audioFormat || !components.audioChannels) {
+                    throw new Error("请先添加MediaInfo或确保MediaInfo包含音频信息");
+                }
+
+                const standardizedTitle = TitleBuilder.build(components);
+                titleInput.value = standardizedTitle;
+
+                Logger.log('标题重建成功! ✅');
+            } catch (error) {
+                Logger.error('重建标题失败', error);
+                alert('重建标题失败: ' + error.message);
             }
-
-            // 打印提取的组件
-            console.log('青蛙转种助手: 提取的标题组件:', titleComponents);
-
-            // 构建标准化标题
-            const standardizedTitle = buildStandardizedTitle(titleComponents);
-            console.log('青蛙转种助手: 重建的标题:', standardizedTitle);
-
-            // 更新标题
-            titleInput.value = standardizedTitle;
-
-            // 移除成功提示，只在控制台记录
-            console.log('青蛙转种助手: 标题重建成功');
-        } catch (error) {
-            console.error('青蛙转种助手: 重建标题失败', error);
-            alert('重建标题失败: ' + error.message);
-        }
+        });
     }
 })();
