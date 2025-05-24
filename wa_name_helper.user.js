@@ -1,11 +1,13 @@
 // ==UserScript==
-// @name         蛙蛙转种标题助手
+// @name         蛙蛙命名助手
 // @namespace    http://tampermonkey.net/
-// @version      1.6
-// @description  根据原标题和MediaInfo，重建符合蛙蛙要求的标题
-// @author       Andiedie (Enhanced by GitHub Copilot)
+// @version      1.6.0
+// @description  根据原标题和MediaInfo，构建符合蛙蛙要求的种子主标题
+// @author       andie
 // @match        https://www.qingwapt.org/upload.php*
 // @grant        none
+// @downloadURL https://github.com/Andiedie/MyScripts/raw/refs/heads/main/wa_name_helper.user.js
+// @updateURL https://github.com/Andiedie/MyScripts/raw/refs/heads/main/wa_name_helper.user.js
 // ==/UserScript==
 
 (function() {
