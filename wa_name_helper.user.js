@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         蛙蛙命名助手
 // @namespace    http://tampermonkey.net/
-// @version      1.8.1
+// @version      1.8.2
 // @description  根据原标题和MediaInfo，构建符合蛙蛙要求的种子主标题
 // @author       andie
 // @match        https://www.qingwapt.org/upload.php*
 // @match        https://new.qingwa.pro/upload.php*
-// @match        https://www.qingwapt.org/upload.php*
+// @match        https://www.qingwapt.com/upload.php*
 // @grant        none
 // @downloadURL https://github.com/Andiedie/MyScripts/raw/refs/heads/main/wa_name_helper.user.js
 // @updateURL https://github.com/Andiedie/MyScripts/raw/refs/heads/main/wa_name_helper.user.js
